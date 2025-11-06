@@ -1,0 +1,23 @@
+/target/
+**/target/
+**/*.rs.bk
+
+# Cargo artifacts
+Cargo.lock
+Cargo.toml.orig
+
+# Rust tooling
+.rustfmt.toml
+.cargo/
+
+# IDE / Editor
+.idea/
+.vscode/
+*.code-workspace
+*.swp
+*.swo
+
+# OS / misc
+.DS_Store
+Thumbs.db
+resultado.txt
