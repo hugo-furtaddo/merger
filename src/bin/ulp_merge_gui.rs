@@ -1,4 +1,6 @@
 use eframe::egui;
+use poll_promise::Promise;
+use rfd::FileDialog;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread;
@@ -26,6 +28,9 @@ struct MergeGui {
     logs: Vec<String>,
     processing: bool,
     receiver: Option<Receiver<WorkerMessage>>,
+    file_dialog: Option<Promise<Option<Vec<PathBuf>>>>,
+    folder_dialog: Option<Promise<Option<PathBuf>>>,
+    save_dialog: Option<Promise<Option<PathBuf>>>,
 }
 
 impl Default for MergeGui {
@@ -42,6 +47,9 @@ impl Default for MergeGui {
             logs: Vec::new(),
             processing: false,
             receiver: None,
+            file_dialog: None,
+            folder_dialog: None,
+            save_dialog: None,
         }
     }
 }
@@ -89,6 +97,28 @@ impl MergeGui {
 
         if disconnect {
             self.receiver = None;
+        }
+    }
+
+    fn poll_dialogs(&mut self) {
+        if let Some(result) = ready_result(&mut self.file_dialog) {
+            if let Some(paths) = result {
+                for path in paths {
+                    self.add_input_path(path);
+                }
+            }
+        }
+
+        if let Some(result) = ready_result(&mut self.folder_dialog) {
+            if let Some(path) = result {
+                self.add_input_path(path);
+            }
+        }
+
+        if let Some(result) = ready_result(&mut self.save_dialog) {
+            if let Some(path) = result {
+                self.output = path.display().to_string();
+            }
         }
     }
 
@@ -184,6 +214,7 @@ impl MergeGui {
 impl eframe::App for MergeGui {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_worker();
+        self.poll_dialogs();
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("ULP Merge");
@@ -194,16 +225,10 @@ impl eframe::App for MergeGui {
 
             ui.horizontal(|ui| {
                 if ui.button("Adicionar arquivo").clicked() {
-                    if let Some(paths) = rfd::FileDialog::new().pick_files() {
-                        for path in paths {
-                            self.add_input_path(path);
-                        }
-                    }
+                    self.file_dialog = Some(spawn_file_dialog());
                 }
                 if ui.button("Adicionar pasta").clicked() {
-                    if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                        self.add_input_path(path);
-                    }
+                    self.folder_dialog = Some(spawn_folder_dialog());
                 }
             });
 
@@ -225,9 +250,8 @@ impl eframe::App for MergeGui {
                 ui.label("Saída:");
                 ui.text_edit_singleline(&mut self.output);
                 if ui.button("Escolher...").clicked() {
-                    if let Some(path) = rfd::FileDialog::new().set_directory(".").save_file() {
-                        self.output = path.display().to_string();
-                    }
+                    let (dir, file) = save_dialog_defaults(&self.output);
+                    self.save_dialog = Some(spawn_save_dialog(dir, file));
                 }
             });
 
@@ -279,6 +303,54 @@ impl eframe::App for MergeGui {
 
         ctx.request_repaint_after(std::time::Duration::from_millis(100));
     }
+}
+
+fn ready_result<T: Clone + Send + 'static>(slot: &mut Option<Promise<T>>) -> Option<T> {
+    let ready = slot.as_ref().and_then(|promise| promise.ready().cloned());
+    if ready.is_some() {
+        *slot = None;
+    }
+    ready
+}
+
+fn spawn_file_dialog() -> Promise<Option<Vec<PathBuf>>> {
+    Promise::spawn_thread("pick_files_dialog", || FileDialog::new().pick_files())
+}
+
+fn spawn_folder_dialog() -> Promise<Option<PathBuf>> {
+    Promise::spawn_thread("pick_folder_dialog", || FileDialog::new().pick_folder())
+}
+
+fn spawn_save_dialog(dir: Option<PathBuf>, file: Option<String>) -> Promise<Option<PathBuf>> {
+    Promise::spawn_thread("save_dialog", move || {
+        let mut dialog = FileDialog::new();
+        if let Some(dir) = dir.as_ref() {
+            dialog = dialog.set_directory(dir);
+        } else if let Ok(current_dir) = std::env::current_dir() {
+            dialog = dialog.set_directory(current_dir);
+        }
+        if let Some(file) = file.as_ref() {
+            dialog = dialog.set_file_name(file);
+        }
+        dialog.save_file()
+    })
+}
+
+fn save_dialog_defaults(output: &str) -> (Option<PathBuf>, Option<String>) {
+    let trimmed = output.trim();
+    if trimmed.is_empty() {
+        return (None, None);
+    }
+    let path = PathBuf::from(trimmed);
+    let dir = path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .filter(|p| !p.as_os_str().is_empty());
+    let file = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|s| s.to_string());
+    (dir, file)
 }
 
 struct GuiProgress {
